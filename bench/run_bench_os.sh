@@ -4,17 +4,16 @@ OS_HOST="${OS_HOST:-https://127.0.0.1:9201}"
 OS_USER="${OS_USER:-admin}"
 OS_PASS="${OS_PASS:-Admin123!ChangeMe}"
 
-echo "[OS] Agregação (avg latency por serviço)..."
-/usr/bin/time -f "elapsed=%E user=%U sys=%S" \
-curl -k -u "${OS_USER}:${OS_PASS}" -s -H 'Content-Type: application/json' "${OS_HOST}/logs/_search" -d '{
+echo "[OS] Agregação..."
+curl -fSk -u "${OS_USER}:${OS_PASS}" -s -H 'Content-Type: application/json' "${OS_HOST}/logs/_search" -d '{
   "size": 0,
   "aggs": {"per_service": {"terms": {"field": "service"},
     "aggs": {"lat":{"avg":{"field":"latency_ms"}}}}}
 }' > /dev/null
 
-echo "[OS] kNN (vector search)..."
+echo "[OS] kNN..."
 docker run --rm -i python:3.11 python - <<'PY' | \
-curl -k -u "${OS_USER}:${OS_PASS}" -s -H 'Content-Type: application/json' "${OS_HOST}/logs/_search" -d @- > /dev/null
+curl -fSk -u "${OS_USER}:${OS_PASS}" -s -H 'Content-Type: application/json' "${OS_HOST}/logs/_search" -d @- > /dev/null
 import json, random
 v=[random.uniform(-1,1) for _ in range(128)]
 print(json.dumps({"size":10,"query":{"knn":{"embedding":{"vector":v,"k":10}}},
