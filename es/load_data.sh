@@ -3,7 +3,7 @@ set -euo pipefail
 
 # === CONFIG FIXA ===
 ES_HOST="http://host.docker.internal:9200"
-DOCS=100000
+DOCS=300000
 DIMS=128
 BATCH=10000
 
