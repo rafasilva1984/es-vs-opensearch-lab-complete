@@ -1,29 +1,48 @@
 version: "3.9"
+
+networks:
+  os-net:
+    name: os-net
+
 services:
   opensearch:
     image: opensearchproject/opensearch:3
     container_name: os
+    hostname: opensearch
     environment:
       - discovery.type=single-node
+      # LAB: segurança desativada (não precisa senha)
       - plugins.security.disabled=true
-      - OPENSEARCH_JAVA_OPTS=-Xms${OS_HEAP:-2g} -Xmx${OS_HEAP:-2g}
+      # Heap padrão (ajuste se precisar)
+      - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
     ulimits:
       memlock: { soft: -1, hard: -1 }
     ports:
-      - "${OS_HTTP:-9201}:9200"
-      - "${OS_DIAG:-9600}:9600"
+      - "9201:9200"
+      - "9600:9600"
     volumes:
       - osdata:/usr/share/opensearch/data
+    networks: [os-net]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health | grep -E '\"status\":\"(yellow|green)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
 
   dashboards:
     image: opensearchproject/opensearch-dashboards:3
     container_name: os-dashboards
     environment:
+      # Aponta para o serviço "opensearch" dentro da mesma rede
       - OPENSEARCH_HOSTS=["http://opensearch:9200"]
+      # LAB: desativa o security no Dashboards
       - OPENSEARCH_SECURITY_DISABLED=true
     ports:
-      - "${OS_DASH:-5602}:5601"
-    depends_on: [opensearch]
+      - "5602:5601"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    networks: [os-net]
 
 volumes:
   osdata: {}
