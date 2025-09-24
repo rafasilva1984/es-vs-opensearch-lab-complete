@@ -5,7 +5,7 @@ set -euo pipefail
 ES_HOST="http://host.docker.internal:9200"
 DOCS=500000
 DIMS=128
-BATCH=50000
+BATCH=20000
 
 echo "[ES] Iniciando carga: ${DOCS} docs, ${DIMS}D, lote=${BATCH}"
 
