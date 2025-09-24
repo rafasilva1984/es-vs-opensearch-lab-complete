@@ -1,0 +1,29 @@
+version: "3.9"
+services:
+  opensearch:
+    image: opensearchproject/opensearch:3
+    container_name: os
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - OPENSEARCH_JAVA_OPTS=-Xms${OS_HEAP:-2g} -Xmx${OS_HEAP:-2g}
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+    ports:
+      - "${OS_HTTP:-9201}:9200"
+      - "${OS_DIAG:-9600}:9600"
+    volumes:
+      - osdata:/usr/share/opensearch/data
+
+  dashboards:
+    image: opensearchproject/opensearch-dashboards:3
+    container_name: os-dashboards
+    environment:
+      - OPENSEARCH_HOSTS=["http://opensearch:9200"]
+      - OPENSEARCH_SECURITY_DISABLED=true
+    ports:
+      - "${OS_DASH:-5602}:5601"
+    depends_on: [opensearch]
+
+volumes:
+  osdata: {}

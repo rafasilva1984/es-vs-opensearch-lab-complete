@@ -1,0 +1,12 @@
+# ES|QL — agregação por minuto e serviço (erros e latência média)
+FROM logs
+| WHERE level == "ERROR" AND service IN ["checkout","payment"]
+| EVAL minute = DATE_TRUNC(1 MINUTE, @timestamp)
+| STATS count() AS erros, avg(latency_ms) AS p50_lat BY service, minute
+| SORT minute DESC
+| LIMIT 20
+
+# ES|QL — filtro por termo
+FROM logs
+| WHERE message LIKE "*timeout*" AND level == "WARN"
+| STATS count() BY service

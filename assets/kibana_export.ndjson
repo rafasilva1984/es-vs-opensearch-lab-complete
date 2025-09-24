@@ -1,0 +1,2 @@
+{"type":"index-pattern","id":"logs-pattern","attributes":{"title":"logs*","timeFieldName":"@timestamp"}, "references":[]}
+{"type":"visualization","id":"avg-latency-by-service","attributes":{"title":"Avg latency by service","visState":"{}","uiStateJSON":"{}","description":"Exemplo de visualização","kibanaSavedObjectMeta":{"searchSourceJSON":"{\"query\":{\"query\":\"*\",\"language\":\"kuery\"},\"indexRefName\":\"kibanaSavedObjectMeta.searchSourceJSON.index\"}"}},"references":[{"type":"index-pattern","id":"logs-pattern","name":"kibanaSavedObjectMeta.searchSourceJSON.index"}]}

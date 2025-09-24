@@ -1,0 +1,10 @@
+-- PPL — agregação por minuto e serviço (erros e latência média)
+search source=logs level="ERROR" service IN ("checkout","payment")
+| eval minute = date_trunc(1m, @timestamp)
+| stats count() as erros, avg(latency_ms) as p50_lat by service, minute
+| sort - minute
+| head 20
+
+-- PPL — filtro por termo
+search source=logs message="*timeout*" level="WARN"
+| stats count() by service
