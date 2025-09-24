@@ -1,63 +1,37 @@
-# Laboratório COMPLETO — Elasticsearch x OpenSearch (Observabilidade na Prática)
+# Elasticsearch vs OpenSearch — Laboratório Comparativo
 
-> **Atenção**: segurança desativada para fins de estudo **(NÃO use em produção)**.
+Este laboratório permite subir **Elasticsearch** e **OpenSearch** lado a lado, ingerir dados simulados e rodar **benchmarks comparativos** de consultas de agregação e busca vetorial (kNN).
 
-## Requisitos
+## 📦 Pré-requisitos
 - Docker + Docker Compose
-- Python 3.8+
-- `curl`
+- curl, awk, bash (já inclusos em WSL / Linux / Git Bash)
+- **Não requer `jq` ou Python local** — tudo roda via `curl` e containers.
 
-## Estrutura
-```
-es-vs-opensearch-lab-complete/
-├─ es/                    # Elasticsearch + Kibana
-│  ├─ docker-compose.yml
-│  └─ load_data.sh
-├─ os/                    # OpenSearch + Dashboards
-│  ├─ docker-compose.yml
-│  └─ load_data.sh
-├─ bench/                 # Scripts de benchmark e geração de docs
-│  ├─ gen_docs.py
-│  ├─ run_bench_es.sh
-│  ├─ run_bench_os.sh
-│  └─ report_template.md
-├─ queries/               # Exemplos de consultas (ES|QL e PPL)
-│  ├─ es_esql_examples.txt
-│  └─ os_ppl_examples.txt
-├─ scripts/               # Utilitários
-│  ├─ start.sh / stop.sh
-│  ├─ health_es.sh / health_os.sh
-│  └─ *.bat (para Windows)
-├─ assets/                # Dashboards de exemplo para importar
-│  ├─ kibana_export.ndjson
-│  └─ opensearch_dashboards_sample.json
-├─ rally/                 # Instruções Rally
-├─ opensearch-benchmark/  # Instruções OS Benchmark
-└─ README.md              # Este arquivo
-```
+---
 
-## 1) Subir os ambientes
+## 🚀 Subindo o ambiente
 
-### Elasticsearch + Kibana
+### Elasticsearch
 ```bash
-cd es-vs-opensearch-lab-complete/es
+cd es
 docker compose up -d
 ```
+Acessar Kibana em: [http://localhost:5601](http://localhost:5601)
 
-### OpenSearch + Dashboards
+### OpenSearch
 ```bash
-cd ../os
+cd os
 docker compose up -d
 ```
+Acessar OpenSearch Dashboards em: [https://localhost:5602](https://localhost:5602)  
+Usuário: `admin`  
+Senha: `Admin123!ChangeMe`
 
-> Para desligar tudo e limpar volumes:
-```bash
-cd es-vs-opensearch-lab-complete/es && docker compose down -v
-cd ../os && docker compose down -v
-```
+---
 
-## 2) Ingestão de dados (200k docs por padrão)
-Na raiz do projeto:
+## 📥 Ingestão de dados
+
+Scripts de ingestão já estão prontos. Eles criam o índice `logs` e populam documentos com embeddings simulados.
 
 ### Elasticsearch
 ```bash
@@ -69,49 +43,111 @@ Na raiz do projeto:
 ./os/load_data.sh
 ```
 
-Variáveis opcionais:
+### Parâmetros opcionais
+Você pode ajustar o volume e o tamanho do lote:
 ```bash
-DOCS=500000 DIMS=256 ./es/load_data.sh
-DOCS=500000 DIMS=256 ./os/load_data.sh
+DOCS=50000 BATCH_DOCS=2000 ./es/load_data.sh
+DOCS=50000 BATCH_DOCS=2000 ./os/load_data.sh
 ```
-
-## 3) Consultas exemplares
-- Acesse **Kibana** em [http://localhost:5601](http://localhost:5601) e cole o conteúdo de `queries/es_esql_examples.txt` no console ES|QL.
-- Acesse **OpenSearch Dashboards** em [http://localhost:5602](http://localhost:5602) e cole `queries/os_ppl_examples.txt` no console PPL.
-
-## 4) Benchmarks
-Na raiz do repositório, rode:
-
-```bash
-./bench/run_bench_es.sh
-./bench/run_bench_os.sh
-```
-
-Repita 10–30 vezes e anote resultados em `bench/report_template.md`.
-
-## 5) Health-checks
-```bash
-./scripts/health_es.sh
-./scripts/health_os.sh
-```
-
-## 6) Dashboards de exemplo
-- **Kibana**: importe `assets/kibana_export.ndjson`
-- **OpenSearch Dashboards**: importe `assets/opensearch_dashboards_sample.json`
-
-## 7) Benchmark oficial (opcional)
-- **Rally**: veja `rally/README.md`
-- **OpenSearch Benchmark**: veja `opensearch-benchmark/README.md`
-
-## Troubleshooting
-- **Containers reiniciando**: reduza heap no `.env` (ou use compose.light.yml).
-- **Bulk lento**: reduza `DOCS`, rode em SSD.
-- **kNN lento**: ajuste parâmetros HNSW (`M`, `efSearch`, `num_candidates`).
-- **Portas em uso**: altere variáveis no `.env` (ES_HTTP, OS_HTTP, etc).
-
-## Segurança (produção)
-- Elasticsearch: habilite `xpack.security.*`, TLS, usuários/roles.
-- OpenSearch: mantenha Security ativo, configure certificados e senhas.
+- `DOCS`: número total de documentos a ingerir.  
+- `BATCH_DOCS`: número de docs enviados por requisição `_bulk`.  
 
 ---
-© Observabilidade na Prática — By Rafa Silva
+
+## 📊 Benchmarks
+
+### Elasticsearch
+```bash
+./bench/run_bench_es.sh
+```
+- Executa **agregação** e **busca vetorial (dense_vector + script_score)**.
+- Salva resultados em `bench/results/es_*`.
+
+### OpenSearch
+```bash
+./bench/run_bench_os.sh
+```
+- Executa **agregação** e **busca vetorial (knn_vector + HNSW)**.
+- Salva resultados em `bench/results/os_*`.
+
+---
+
+## ⚖️ Benchmark Comparativo
+
+Para rodar **ambos** e gerar relatório comparando ES x OS:
+
+```bash
+./bench/run_bench_compare.sh
+```
+
+Este script:
+- Executa ES e OS em paralelo (agregação e kNN).  
+- Calcula métricas de **latência média, p50, p95, min, max**.  
+- Gera arquivos CSV com latências individuais e médias:  
+  - `bench/results/es_summary.csv`  
+  - `bench/results/os_summary.csv`  
+  - `bench/results/combined_summary.csv`  
+- Cria um **relatório automático em Markdown**:  
+  - `bench/results/report.md`
+
+### Exemplo de saída no console
+```
+== Summary combinado (avg em s) ==
+engine  scenario  avg    p50    p95    min    max
+ES      agg       0.012  0.011  0.020  0.010  0.031
+ES      knn       0.028  0.027  0.041  0.025  0.052
+OS      agg       0.011  0.010  0.019  0.009  0.029
+OS      knn       0.014  0.013  0.022  0.012  0.034
+
+Agregação: vencedor: OS | ganho vs ES: ~8.3%
+kNN:       vencedor: OS | ganho vs ES: ~50.0%
+```
+
+### Trecho do relatório (`report.md`)
+```markdown
+## Quem venceu?
+- **Agregação:** OS  (ganho vs ES: 8.3%)
+- **kNN:** OS  (ganho vs ES: 50.0%)
+
+## Explicação rápida
+- **OpenSearch kNN**: usa `knn_vector` com ANN/HNSW (aproximação por grafo), evitando varredura completa → mais rápido em bases grandes.
+- **Elasticsearch kNN**: usa `dense_vector` + `script_score` (cosineSimilarity), que é exato mas faz scan de todos os docs → tende a ficar mais lento conforme cresce.
+```
+
+---
+
+## 📈 Interpretação dos resultados
+
+- **Agregações** → desempenho parecido, pois ambos usam estruturas invertidas do Lucene. Diferenças vêm de cache, shards e I/O.  
+- **Busca vetorial (kNN)** →  
+  - OpenSearch se destaca pelo suporte nativo ao HNSW (ANN).  
+  - Elasticsearch ainda depende de `script_score`, que é exato, mas escala mal para grandes volumes.  
+- Em bases pequenas, a diferença pode ser pequena ou até inverter por efeito de cache/overhead TLS.  
+- Em bases maiores (100k+ docs), a vantagem do OS deve crescer.
+
+---
+
+## 🔮 Próximos passos sugeridos
+
+1. Aumentar `DOCS` para 100k+ e refazer os benchmarks.  
+2. Fazer **warmup** (rodar 1 vez antes de medir).  
+3. Configurar índices com **1 shard e 0 replicas** em lab para evitar variabilidade.  
+4. Comparar custo/licenciamento:  
+   - Elasticsearch (Elastic License 2.0).  
+   - OpenSearch (Apache 2.0, open source completo).  
+
+---
+
+## 📂 Estrutura de resultados
+
+```
+bench/results/
+├── es_summary.csv
+├── os_summary.csv
+├── combined_summary.csv
+├── report.md
+├── es_agg_raw.csv
+├── es_knn_raw.csv
+├── os_agg_raw.csv
+├── os_knn_raw.csv
+```
