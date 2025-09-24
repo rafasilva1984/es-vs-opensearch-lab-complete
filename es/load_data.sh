@@ -3,9 +3,9 @@ set -euo pipefail
 
 # === CONFIG FIXA ===
 ES_HOST="http://host.docker.internal:9200"
-DOCS=5000
+DOCS=100000
 DIMS=128
-BATCH=1000
+BATCH=10000
 
 echo "[ES] Iniciando carga: ${DOCS} docs, ${DIMS}D, lote=${BATCH}"
 
