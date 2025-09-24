@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# OS publicado no host com TLS e Basic Auth
 OS_HOST="${OS_HOST:-https://host.docker.internal:9201}"
 OS_USER="${OS_USER:-admin}"
 OS_PASS="${OS_PASS:-Admin123!ChangeMe}"
-DOCS="${DOCS:-200000}"
+DOCS="${DOCS:-20000}"
 DIMS="${DIMS:-128}"
-BATCH_DOCS="${BATCH_DOCS:-5000}"
+BATCH_DOCS="${BATCH_DOCS:-2000}"
 
 echo "[OS] Iniciando carga: ${DOCS} docs, ${DIMS}D, lote=${BATCH_DOCS}"
 
@@ -17,11 +16,10 @@ import json, random, datetime, os, urllib.request, ssl, base64
 
 OS_HOST=os.environ["OS_HOST"]
 USER=os.environ["OS_USER"]; PASS=os.environ["OS_PASS"]
-DOCS=int(os.getenv("DOCS","200000"))
+DOCS=int(os.getenv("DOCS","20000"))
 DIMS=int(os.getenv("DIMS","128"))
-BATCH=int(os.getenv("BATCH_DOCS","5000"))
+BATCH=int(os.getenv("BATCH_DOCS","2000"))
 
-# TLS: aceitar self-signed (LAB)
 ctx=ssl.create_default_context()
 ctx.check_hostname=False
 ctx.verify_mode=ssl.CERT_NONE
@@ -41,8 +39,11 @@ def http(method, path, data=None, headers=None):
 def json_req(method, path, body):
     return http(method, path, json.dumps(body), {"Content-Type":"application/json"})
 
-# DELETE índice (ignora 404)
-try: http("DELETE","/logs"); except: pass
+# DELETE índice
+try:
+    http("DELETE","/logs")
+except Exception:
+    pass
 
 # PUT índice com knn_vector
 json_req("PUT","/logs",{
@@ -56,7 +57,8 @@ json_req("PUT","/logs",{
     "latency_ms":{"type":"integer"},
     "embedding":{"type":"knn_vector","dimension":DIMS,
                  "method":{"name":"hnsw","engine":"nmslib","space_type":"cosinesimil"}}
-}})
+  }}
+})
 
 services=["api-gateway","checkout","payment","auth","catalog"]
 
@@ -72,7 +74,7 @@ def bulk(batch_docs):
         for it in j.get("items",[]):
             if "error" in it.get("index",{}):
                 raise SystemExit(f"Bulk error: {it['index']['error']}")
-        raise SystemExit("Bulk errors:true (sem detalhes)")
+        raise SystemExit("Bulk errors:true")
     return j
 
 buf=[]; sent=0
