@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OS_HOST="${OS_HOST:-https://localhost:9201}"
+OS_HOST="${OS_HOST:-https://127.0.0.1:9201}"
 OS_USER="${OS_USER:-admin}"
 OS_PASS="${OS_PASS:-Admin123!ChangeMe}"
 DOCS="${DOCS:-200000}"
@@ -22,10 +22,27 @@ curl -k -u "${OS_USER}:${OS_PASS}" -s "${OS_HOST}/logs" -H 'Content-Type: applic
   }}
 }" > /dev/null
 
-echo "[OS] Gerando ${DOCS} docs e fazendo bulk..."
-python3 "$(dirname "$0")/../bench/gen_docs.py" --n "$DOCS" --dims "$DIMS" | \
+echo "[OS] Gerando ${DOCS} docs (via container python) e fazendo bulk..."
+docker run --rm -i -e DOCS -e DIMS python:3.11 python - <<'PY' | \
   curl -k -u "${OS_USER}:${OS_PASS}" -s -H 'Content-Type: application/x-ndjson' \
     -XPOST "${OS_HOST}/logs/_bulk" --data-binary @- > /dev/null
-
+import json, random, datetime, os, sys
+DOCS=int(os.environ.get("DOCS","200000"))
+DIMS=int(os.environ.get("DIMS","128"))
+services=["api-gateway","checkout","payment","auth","catalog"]
+actions=[f"a{i}" for i in range(1,201)]
+for i in range(DOCS):
+    doc={
+      "@timestamp": (datetime.datetime.utcnow()-datetime.timedelta(seconds=random.randint(0,172800))).isoformat()+"Z",
+      "service": random.choice(services),
+      "level": random.choice(["INFO","WARN","ERROR"]),
+      "message": f"event {i}",
+      "req_id": f"id{i}",
+      "latency_ms": random.randint(1,2500),
+      "embedding": [random.uniform(-1,1) for _ in range(DIMS)]
+    }
+    sys.stdout.write(json.dumps({"index":{}})+"\n")
+    sys.stdout.write(json.dumps(doc)+"\n")
+PY
 curl -k -u "${OS_USER}:${OS_PASS}" -s "${OS_HOST}/_refresh" > /dev/null
 echo "[OS] Concluído."
