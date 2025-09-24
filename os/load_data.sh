@@ -5,9 +5,9 @@ set -euo pipefail
 OS_HOST="https://host.docker.internal:9201"
 OS_USER="admin"
 OS_PASS="Admin123!ChangeMe"
-DOCS=300000
+DOCS=500000
 DIMS=128
-BATCH=10000
+BATCH=50000
 
 echo "[OS] Iniciando carga: ${DOCS} docs, ${DIMS}D, lote=${BATCH}"
 
