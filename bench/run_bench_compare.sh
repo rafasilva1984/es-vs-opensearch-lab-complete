@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+# v2: self-contained + logs + arquivos sempre gerados
 set -euo pipefail
 
-# ========= Config =========
+# ===== Config =====
 ES_HOST="${ES_HOST:-http://127.0.0.1:9200}"
 OS_HOST="${OS_HOST:-https://127.0.0.1:9201}"
 OS_USER="${OS_USER:-admin}"
@@ -9,177 +10,169 @@ OS_PASS="${OS_PASS:-Admin123!ChangeMe}"
 INDEX="${INDEX:-logs}"
 DIMS="${DIMS:-128}"
 K="${K:-10}"
-N="${N:-30}"              # repetições por cenário
+N="${N:-30}"              # repetições
 OUT_DIR="bench/results"
 mkdir -p "$OUT_DIR"
 
-# ========= Cores (se disponível) =========
-if command -v tput >/dev/null 2>&1; then
-  BOLD=$(tput bold); DIM=$(tput dim); RED=$(tput setaf 1); GRN=$(tput setaf 2)
-  YLW=$(tput setaf 3); BLU=$(tput setaf 4); MAG=$(tput setaf 5); CYA=$(tput setaf 6); RST=$(tput sgr0)
-else BOLD=""; DIM=""; RED=""; GRN=""; YLW=""; BLU=""; MAG=""; CYA=""; RST=""; fi
+# ===== Aparência =====
+log(){ printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*"; }
 
-echo "${BOLD}► Bench combinado (runs=$N, k=$K, dims=$DIMS)${RST}"
-echo "   ES: $ES_HOST/$INDEX"
-echo "   OS: $OS_HOST/$INDEX"
-
-# ========= 1) Rodar benches (reutilizando teus scripts) =========
-N="$N" K="$K" DIMS="$DIMS" bench/run_bench_es.sh >/dev/null
-N="$N" K="$K" DIMS="$DIMS" bench/run_bench_os.sh >/dev/null
-
-# ========= 2) Ler summaries =========
-# CSV: scenario,avg,p50,p95,min,max
-read_csv() {
-  local f="$1" scen="$2"
-  awk -F, -v s="$scen" 'NR>1 && $1==s {print $0}' "$f"
+# ===== Helpers numéricos =====
+percentiles() { # stdin: um valor por linha -> avg,p50,p95,min,max
+  awk '{x[NR]=$1; s+=$1} END{
+    n=NR; if(n==0){print "0,0,0,0,0"; exit}
+    asort(x);
+    p50=x[int((n+1)*0.50)]; p95=x[int((n+1)*0.95)];
+    min=x[1]; max=x[n]; avg=s/n;
+    printf "%.4f,%.4f,%.4f,%.4f,%.4f\n",avg,p50,p95,min,max;
+  }'
 }
-ES_SUM="$OUT_DIR/es_summary.csv"
-OS_SUM="$OUT_DIR/os_summary.csv"
+pct_gain(){ awk -v a="$1" -v b="$2" 'BEGIN{if(a==0||b==0){print "NA"} else printf("%.1f%%",(1-b/a)*100)}'; }
+spdup(){ awk -v a="$1" -v b="$2" 'BEGIN{if(a==0||b==0){print "NA"} else printf("%.2fx",a/b)}'; }
 
-ES_AGG=$(read_csv "$ES_SUM" "ES-agg")
-ES_KNN=$(read_csv "$ES_SUM" "ES-knn")
-OS_AGG=$(read_csv "$OS_SUM" "OS-agg")
-OS_KNN=$(read_csv "$OS_SUM" "OS-knn")
+# ===== Vetor aleatório =====
+rand_vec() {
+  awk -v d="$DIMS" 'BEGIN{srand(); printf("["); for(i=0;i<d;i++){v=((rand()*2)-1); printf("%s%.6f",(i?",":""),v)} printf("]")}'
+}
 
-# ========= 3) Extrair números =========
-# campos: scenario,avg,p50,p95,min,max
-get_col() { echo "$1" | awk -F, -v c="$2" '{print $c}'; }
+# ===== Medição com curl =====
+measure_es(){ # $1=json body
+  local body="$1" t; for i in $(seq 1 "$N"); do
+    t=$(curl -s -o /dev/null -w "%{time_total}" -H "Content-Type: application/json" --data "$body" "$ES_HOST/$INDEX/_search")
+    echo "$t"
+  done
+}
+measure_os(){ # $1=json body
+  local body="$1" t; for i in $(seq 1 "$N"); do
+    t=$(curl -s -k -u "$OS_USER:$OS_PASS" -o /dev/null -w "%{time_total}" -H "Content-Type: application/json" --data "$body" "$OS_HOST/$INDEX/_search")
+    echo "$t"
+  done
+}
 
-ES_AGG_AVG=$(get_col "$ES_AGG" 2); ES_KNN_AVG=$(get_col "$ES_KNN" 2)
-OS_AGG_AVG=$(get_col "$OS_AGG" 2); OS_KNN_AVG=$(get_col "$OS_KNN" 2)
+# ===== Query bodies =====
+AGG_BODY='{
+  "size": 0,
+  "aggs": {
+    "by_service": { "terms": { "field": "service", "size": 10 } },
+    "latency": { "stats": { "field": "latency_ms" } }
+  }
+}'
+VEC="$(rand_vec)"
+ES_KNN_BODY=$(cat <<JSON
+{
+  "size": $K,
+  "query": {
+    "script_score": {
+      "query": { "match_all": {} },
+      "script": {
+        "source": "cosineSimilarity(params.q, 'embedding') + 1.0",
+        "params": { "q": $VEC }
+      }
+    }
+  }
+}
+JSON
+)
+OS_KNN_BODY=$(cat <<JSON
+{
+  "size": $K,
+  "query": {
+    "knn": {
+      "embedding": { "vector": $VEC, "k": $K }
+    }
+  }
+}
+JSON
+)
 
-# ========= 4) Calcular speedups =========
-spdup() { awk -v a="$1" -v b="$2" 'BEGIN{ if(a==0||b==0){print "NA"} else {printf "%.2fx", (a/b)} }'; }
-DIFF_PCT() { awk -v a="$1" -v b="$2" 'BEGIN{ if(a==0||b==0){print "NA"} else {printf "%.1f%%", ((b-a)/a)*100} }'; }
+log "Bench combinado (runs=$N, k=$K, dims=$DIMS)"
+log "ES: $ES_HOST/$INDEX"
+log "OS: $OS_HOST/$INDEX"
 
-# speedup >1.00x => primeiro é mais lento (tempo/tempo). vamos também gerar “quem vence”.
-SPD_AGG=$(spdup "$ES_AGG_AVG" "$OS_AGG_AVG")
-SPD_KNN=$(spdup "$ES_KNN_AVG" "$OS_KNN_AVG")
+# ===== Rodar testes =====
+log "ES - Agregação..."
+ES_AGG_TIMES=$(measure_es "$AGG_BODY");   ES_AGG_METRICS=$(printf "%s\n" "$ES_AGG_TIMES" | percentiles)
+log "ES - kNN (script_score/cosineSimilarity)..."
+ES_KNN_TIMES=$(measure_es "$ES_KNN_BODY"); ES_KNN_METRICS=$(printf "%s\n" "$ES_KNN_TIMES" | percentiles)
+
+log "OS - Agregação..."
+OS_AGG_TIMES=$(measure_os "$AGG_BODY");   OS_AGG_METRICS=$(printf "%s\n" "$OS_AGG_TIMES" | percentiles)
+log "OS - kNN (ANN/HNSW)..."
+OS_KNN_TIMES=$(measure_os "$OS_KNN_BODY"); OS_KNN_METRICS=$(printf "%s\n" "$OS_KNN_TIMES" | percentiles)
+
+# ===== Salvar CSVs brutos =====
+printf "run,time_total\n" > "$OUT_DIR/es_agg_raw.csv";  printf "%s\n" "$ES_AGG_TIMES" | nl -w1 -s, >> "$OUT_DIR/es_agg_raw.csv"
+printf "run,time_total\n" > "$OUT_DIR/es_knn_raw.csv";  printf "%s\n" "$ES_KNN_TIMES" | nl -w1 -s, >> "$OUT_DIR/es_knn_raw.csv"
+printf "run,time_total\n" > "$OUT_DIR/os_agg_raw.csv";  printf "%s\n" "$OS_AGG_TIMES" | nl -w1 -s, >> "$OUT_DIR/os_agg_raw.csv"
+printf "run,time_total\n" > "$OUT_DIR/os_knn_raw.csv";  printf "%s\n" "$OS_KNN_TIMES" | nl -w1 -s, >> "$OUT_DIR/os_knn_raw.csv"
+
+# ===== Summaries por engine =====
+printf "scenario,avg,p50,p95,min,max\nES-agg,%s\nES-knn,%s\n" "$ES_AGG_METRICS" "$ES_KNN_METRICS" > "$OUT_DIR/es_summary.csv"
+printf "scenario,avg,p50,p95,min,max\nOS-agg,%s\nOS-knn,%s\n" "$OS_AGG_METRICS" "$OS_KNN_METRICS" > "$OUT_DIR/os_summary.csv"
+
+# ===== CSV combinado =====
+COMB="$OUT_DIR/combined_summary.csv"
+{
+  echo "engine,scenario,avg,p50,p95,min,max"
+  echo "ES,agg,$ES_AGG_METRICS"
+  echo "ES,knn,$ES_KNN_METRICS"
+  echo "OS,agg,$OS_AGG_METRICS"
+  echo "OS,knn,$OS_KNN_METRICS"
+} > "$COMB"
+
+# ===== Comparação / Análise =====
+ES_AGG_AVG=$(echo "$ES_AGG_METRICS" | cut -d, -f1)
+ES_KNN_AVG=$(echo "$ES_KNN_METRICS" | cut -d, -f1)
+OS_AGG_AVG=$(echo "$OS_AGG_METRICS" | cut -d, -f1)
+OS_KNN_AVG=$(echo "$OS_KNN_METRICS" | cut -d, -f1)
 
 WIN_AGG=$(awk -v es="$ES_AGG_AVG" -v os="$OS_AGG_AVG" 'BEGIN{print (es<os)?"ES":"OS"}')
 WIN_KNN=$(awk -v es="$ES_KNN_AVG" -v os="$OS_KNN_AVG" 'BEGIN{print (es<os)?"ES":"OS"}')
 
-# ========= 5) Checar mapeamento/ajustes para explicar =========
-# ES mapping
-ES_MAP=$(curl -s "$ES_HOST/$INDEX/_mapping")
-ES_VEC_TYPE=$(echo "$ES_MAP" | sed 's/ //g' | tr -d '\n' | sed 's/{"[^"]*"://' \
-  | sed 's/.*"embedding":{"type":"\([^"]*\)".*/\1/' )
+AGG_GAIN=$(pct_gain "$ES_AGG_AVG" "$OS_AGG_AVG")
+KNN_GAIN=$(pct_gain "$ES_KNN_AVG" "$OS_KNN_AVG")
+SPD_AGG=$(spdup "$ES_AGG_AVG" "$OS_AGG_AVG")
+SPD_KNN=$(spdup "$ES_KNN_AVG" "$OS_KNN_AVG")
 
-# OS mapping + settings
-OS_MAP=$(curl -s -k -u "$OS_USER:$OS_PASS" "$OS_HOST/$INDEX/_mapping")
-OS_VEC_TYPE=$(echo "$OS_MAP" | sed 's/ //g' | tr -d '\n' | sed 's/{"[^"]*"://' \
-  | sed 's/.*"embedding":{"type":"\([^"]*\)".*/\1/' )
-OS_SET=$(curl -s -k -u "$OS_USER:$OS_PASS" "$OS_HOST/$INDEX/_settings")
-OS_KNN_ENABLED=$(echo "$OS_SET" | sed 's/ //g' | tr -d '\n' | sed 's/{"[^"]*"://' \
-  | sed -n 's/.*"index.knn":"\{0,1\}\([^",}]*\).*/\1/p' )
-if [ -z "${OS_KNN_ENABLED:-}" ]; then OS_KNN_ENABLED=$(echo "$OS_SET" | grep -o '"index.knn"[^,}]*' | tail -n1 | awk -F: '{print $2}' | tr -d '"'); fi
-
-# ========= 6) CSV combinado =========
-COMB="$OUT_DIR/combined_summary.csv"
-{
-  echo "engine,scenario,avg,p50,p95,min,max"
-  echo "ES,agg,$(echo "$ES_AGG" | cut -d, -f2- )"
-  echo "ES,knn,$(echo "$ES_KNN" | cut -d, -f2- )"
-  echo "OS,agg,$(echo "$OS_AGG" | cut -d, -f2- )"
-  echo "OS,knn,$(echo "$OS_KNN" | cut -d, -f2- )"
-} > "$COMB"
-
-# ========= 7) Análise textual =========
-pct() { awk -v a="$1" -v b="$2" 'BEGIN{ if(a==0||b==0){print "NA"} else {printf "%.1f%%", (1-b/a)*100} }'; }
-AGG_GAIN=$(pct "$ES_AGG_AVG" "$OS_AGG_AVG")
-KNN_GAIN=$(pct "$ES_KNN_AVG" "$OS_KNN_AVG")
-
-analysis() {
-  echo "== Resumo numérico =="
-  printf "ES-agg avg: %s s | OS-agg avg: %s s | vencedor: %s | ganho: %s\n" "$ES_AGG_AVG" "$OS_AGG_AVG" "$WIN_AGG" "$AGG_GAIN"
-  printf "ES-knn avg: %s s | OS-knn avg: %s s | vencedor: %s | ganho: %s\n" "$ES_KNN_AVG" "$OS_KNN_AVG" "$WIN_KNN" "$KNN_GAIN"
-  echo
-
-  echo "== Interpretação técnica =="
-  echo "- Vetores:"
-  echo "  • ES: embedding = ${ES_VEC_TYPE:-?}  → busca vetorial feita com script_score (cosineSimilarity), tipicamente varredura total (exata)."
-  echo "  • OS: embedding = ${OS_VEC_TYPE:-?}  + index.knn=${OS_KNN_ENABLED:-?}  → usa kNN nativo (HNSW, aproximação por grafo)."
-  echo
-  if [ "$WIN_KNN" = "OS" ]; then
-    cat <<'TXT'
-- Por que OS é mais rápido no kNN?
-  • O OpenSearch usa índice ANN (HNSW) nativo para `knn_vector`: ele não compara o vetor de consulta com **todos** os documentos;
-    navega no grafo e compara só candidatos prováveis. Isso reduz muito o custo conforme a coleção cresce.
-  • No Elasticsearch, com `dense_vector` + `script_score`, o caminho padrão é varredura com exatidão (brute force). Em coleções pequenas,
-    a diferença pode ser pequena; mas com 100k+ docs, o HNSW tende a abrir vantagem grande.
-TXT
-  else
-    cat <<'TXT'
-- Por que ES ficou mais rápido no kNN (neste teste)?
-  • Em bases pequenas, a sobrecarga de HTTPS + autenticação no OS e efeitos de cache podem empatar ou até inverter o resultado.
-  • Verifique também:
-      - K e dimensão (k/DIMS) baixos podem reduzir a vantagem do ANN.
-      - Warmup: rode o bench duas vezes; a segunda rodada costuma estabilizar caches.
-      - Se o índice OS não estiver com `index.knn: true` ou o campo não for `knn_vector`, ele não usará o HNSW.
-TXT
-  fi
-  echo
-  echo "- Agregações:"
-  echo "  • Ambos usam estruturas invertidas do Lucene; desempenho tende a ser parecido."
-  echo "  • Diferenças aqui geralmente vêm de shardização/replicas, cache quente, e I/O local. Para fairness, mantenha 1 shard e 0 réplicas em lab."
-  echo
-  echo "== Próximos passos p/ comparação mais 'real' =="
-  echo "  1) Aumente o volume: DOCS=100000 em ambos; repita o bench."
-  echo "  2) Aqueça cache: rode cada cenário 1x antes de medir."
-  echo "  3) Fixe condições: 1 shard, 0 replicas, refresh_interval='-1' durante ingestão."
-  echo
-}
-
-# ========= 8) Report Markdown =========
+# ===== Relatório Markdown =====
 REPORT="$OUT_DIR/report.md"
 {
   echo "# Benchmark ES vs OpenSearch — $(date +'%Y-%m-%d %H:%M:%S')"
   echo
   echo "## Parâmetros"
-  echo "- Runs (repetições): **$N**"
-  echo "- Top-K (kNN): **$K**"
-  echo "- Dimensões do vetor: **$DIMS**"
+  echo "- Runs: **$N**"
+  echo "- Top-K: **$K**"
+  echo "- Dimensões: **$DIMS**"
   echo "- Índice: **$INDEX**"
   echo
   echo "## Resultados (média de latência em segundos)"
-  echo ""
+  echo
   echo "| Engine | Cenário | avg | p50 | p95 | min | max |"
   echo "|-------:|:-------|----:|----:|----:|----:|----:|"
   awk -F, 'NR>1{printf("| %s | %s | %.4f | %.4f | %.4f | %.4f | %.4f |\n",$1,$2,$3,$4,$5,$6,$7)}' "$COMB"
   echo
   echo "## Quem venceu?"
-  echo "- **Agregação:** $WIN_AGG  (ganho vs outro: $AGG_GAIN)"
-  echo "- **kNN:** $WIN_KNN  (ganho vs outro: $KNN_GAIN)"
+  echo "- **Agregação:** $WIN_AGG  (ganho vs outro: $AGG_GAIN; speedup ES/OS=$SPD_AGG)"
+  echo "- **kNN:** $WIN_KNN  (ganho vs outro: $KNN_GAIN; speedup ES/OS=$SPD_KNN)"
   echo
-  echo "## Explicação técnica"
-  echo "- **Elasticsearch** usa \`dense_vector\` + \`script_score\` (busca exata)."
-  echo "- **OpenSearch** usa \`knn_vector\` com \`index.knn: true\` (ANN/HNSW)."
+  echo "## Explicação rápida"
+  echo "- **kNN**: OpenSearch usa \`knn_vector\` com ANN/HNSW (aproximação por grafo). Isso evita varredura completa e escala melhor conforme o volume cresce."
+  echo "- **ES kNN (neste lab)**: \`dense_vector\` + \`script_score\` (cosineSimilarity) = busca exata; em coleções pequenas pode empatar, mas tende a ficar mais lenta em bases grandes."
+  echo "- **Agregações**: ambos usam estruturas invertidas; diferenças normalmente vêm de cache quente, shards/replicas e I/O."
   echo
-  if [ "$WIN_KNN" = "OS" ]; then
-    echo "> O HNSW do OS evita varredura completa e tende a escalar melhor para kNN."
-  else
-    echo "> Em bases pequenas/caches frios, a sobrecarga de HTTPS/Auth e efeitos de cache podem favorecer ES. Verifique o mapping e aqueça caches."
-  fi
-  echo
-  echo "## Arquivos gerados"
-  echo "- \`$COMB\` (summary combinado)"
-  echo "- \`$OUT_DIR/es_summary.csv\`, \`$OUT_DIR/os_summary.csv\`"
-  echo "- \`$OUT_DIR/es_*_raw.csv\`, \`$OUT_DIR/os_*_raw.csv\`"
+  echo "## Próximos passos"
+  echo "1) Aumente DOCS para 100k+ e repita."
+  echo "2) Faça warmup (rodar 1x antes de medir)."
+  echo "3) Padronize: 1 shard, 0 replicas, e \`refresh_interval: -1\` na ingestão."
 } > "$REPORT"
 
-# ========= 9) Console: resumo + análise =========
+# ===== Console =====
 echo
-echo "${BOLD}== Summary combinado (avg em s) ==${RST}"
-column -s, -t "$COMB" | sed '1s/^/'"${DIM}"'/;1s/$/'"${RST}"'/'
+log "== Summary combinado (avg em s) =="
+column -s, -t "$COMB" || cat "$COMB"   # fallback caso 'column' não exista
 echo
-printf "${BOLD}Agregação:${RST} vencedor: %s  | ES avg=%s  OS avg=%s  | speedup ES/OS=%s  | ganho=%s\n" \
-  "$WIN_AGG" "$ES_AGG_AVG" "$OS_AGG_AVG" "$SPD_AGG" "$AGG_GAIN"
-printf "${BOLD}kNN:${RST}        vencedor: %s  | ES avg=%s  OS avg=%s  | speedup ES/OS=%s  | ganho=%s\n" \
-  "$WIN_KNN" "$ES_KNN_AVG" "$OS_KNN_AVG" "$SPD_KNN" "$KNN_GAIN"
-
+log "Agregação: vencedor=$WIN_AGG | ES avg=$ES_AGG_AVG  OS avg=$OS_AGG_AVG | speedup ES/OS=$SPD_AGG | ganho=$AGG_GAIN"
+log "kNN:        vencedor=$WIN_KNN | ES avg=$ES_KNN_AVG  OS avg=$OS_KNN_AVG | speedup ES/OS=$SPD_KNN | ganho=$KNN_GAIN"
 echo
-analysis
-
-echo
-echo "${CYA}Relatório:${RST} $REPORT"
-echo "${CYA}CSVs:${RST}     $COMB"
+log "Relatório: $REPORT"
+log "CSVs:      $COMB"
