@@ -4,6 +4,10 @@ set -euo pipefail
 ES_HOST="${ES_HOST:-http://127.0.0.1:9200}"
 DOCS="${DOCS:-200000}"
 DIMS="${DIMS:-128}"
+CHUNK_SIZE_MB="${CHUNK_SIZE_MB:-40}"  # cada parte ~40MB, ficar bem abaixo do default 100MB
+
+workdir="$(mktemp -d)"
+ndjson="${workdir}/es_bulk.ndjson"
 
 # apaga índice antigo (ignora 404)
 curl -fsS -XDELETE "${ES_HOST}/logs" >/dev/null || true
@@ -18,12 +22,11 @@ curl -fS -XPUT "${ES_HOST}/logs" -H 'Content-Type: application/json' -d "{
     \"req_id\":{\"type\":\"keyword\"},
     \"latency_ms\":{\"type\":\"integer\"},
     \"embedding\":{\"type\":\"dense_vector\",\"dims\":${DIMS}}
-  }} }"
-echo
+  }} }" >/dev/null
+echo "[ES] OK."
 
-echo "[ES] Gerando ${DOCS} docs (via container python) e fazendo bulk..."
-docker run --rm -i -e DOCS -e DIMS python:3.11 python - <<'PY' | \
-  curl -fS -H 'Content-Type: application/x-ndjson' -XPOST "${ES_HOST}/logs/_bulk" --data-binary @- > /tmp/es_bulk_resp.json
+echo "[ES] Gerando ${DOCS} docs (via container python) em NDJSON..."
+docker run --rm -e DOCS -e DIMS python:3.11 python - <<'PY' > "${ndjson}"
 import json, random, datetime, os, sys
 DOCS=int(os.environ.get("DOCS","200000")); DIMS=int(os.environ.get("DIMS","128"))
 services=["api-gateway","checkout","payment","auth","catalog"]
@@ -35,11 +38,20 @@ for i in range(DOCS):
     sys.stdout.write('{"index":{}}\n'); sys.stdout.write(json.dumps(doc)+'\n')
 PY
 
-# falha se o bulk tiver errors=true
-if grep -q '"errors":\s*true' /tmp/es_bulk_resp.json; then
-  echo "[ES] ERRO no bulk:"; head -n 60 /tmp/es_bulk_resp.json; exit 1
-fi
+echo "[ES] Split em partes de ~${CHUNK_SIZE_MB}MB e fazendo _bulk..."
+split -b "${CHUNK_SIZE_MB}m" -d -a 4 "${ndjson}" "${workdir}/part_"
+
+for part in "${workdir}"/part_*; do
+  printf "[ES] Enviando %s ... " "$(basename "$part")"
+  curl -fS -H 'Content-Type: application/x-ndjson' -XPOST "${ES_HOST}/logs/_bulk" --data-binary @"${part}" > "${part}.resp"
+  if grep -q '"errors":\s*true' "${part}.resp"; then
+    echo "ERRO"; head -n 60 "${part}.resp"; rm -rf "${workdir}"; exit 1
+  else
+    echo "ok"
+  fi
+done
 
 curl -fsS "${ES_HOST}/_refresh" >/dev/null
 echo "[ES] Count:"; curl -fsS "${ES_HOST}/logs/_count?pretty"
+rm -rf "${workdir}"
 echo
