@@ -11,20 +11,21 @@ services:
     hostname: opensearch
     environment:
       - discovery.type=single-node
-      # LAB: segurança desativada (não precisa senha)
-      - plugins.security.disabled=true
-      # Heap padrão (ajuste se precisar)
+      # Segurança HABILITADA (padrão). Define a senha inicial do usuário 'admin'.
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Admin123!ChangeMe
+      # Heap (ajuste se precisar)
       - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
     ulimits:
       memlock: { soft: -1, hard: -1 }
     ports:
-      - "9201:9200"
+      - "9201:9200"   # HTTPS
       - "9600:9600"
     volumes:
       - osdata:/usr/share/opensearch/data
     networks: [os-net]
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health | grep -E '\"status\":\"(yellow|green)\"'"]
+      # -k para ignorar certificado autoassinado (LAB)
+      test: ["CMD-SHELL", "curl -kfsS https://localhost:9200/_cluster/health | grep -E '\"status\":\"(yellow|green)\"'"]
       interval: 10s
       timeout: 5s
       retries: 30
@@ -33,10 +34,15 @@ services:
     image: opensearchproject/opensearch-dashboards:3
     container_name: os-dashboards
     environment:
-      # Aponta para o serviço "opensearch" dentro da mesma rede
-      - OPENSEARCH_HOSTS=["http://opensearch:9200"]
-      # LAB: desativa o security no Dashboards
-      - OPENSEARCH_SECURITY_DISABLED=true
+      # Aponta para o serviço "opensearch" via HTTPS
+      - OPENSEARCH_HOSTS=["https://opensearch:9200"]
+      # Credenciais padrão do plugin Security (usuário admin)
+      - OPENSEARCH_USERNAME=admin
+      - OPENSEARCH_PASSWORD=Admin123!ChangeMe
+      # Ignora verificação do certificado (autoassinado no LAB)
+      - OPENSEARCH_SSL_VERIFICATIONMODE=none
+      # (Opcional) para acessar de outra máquina
+      - SERVER_HOST=0.0.0.0
     ports:
       - "5602:5601"
     depends_on:
