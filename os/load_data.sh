@@ -7,7 +7,7 @@ OS_USER="admin"
 OS_PASS="Admin123!ChangeMe"
 DOCS=500000
 DIMS=128
-BATCH=50000
+BATCH=20000
 
 echo "[OS] Iniciando carga: ${DOCS} docs, ${DIMS}D, lote=${BATCH}"
 
